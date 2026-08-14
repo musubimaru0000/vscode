@@ -559,7 +559,10 @@
   // generateContent, it manages conversation history server-side: each agent's
   // thread is continued via previous_interaction_id rather than by resending the
   // full message list every turn, so per-side state is tracked in geminiState.
-  const GEMINI_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1beta2/interactions';
+  // Note: Google's own docs currently show "v1beta2/interactions", but that path
+  // 404s / has no CORS support as of this writing; "v1beta/interactions" is the
+  // endpoint that actually responds (verified directly against the API).
+  const GEMINI_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions';
   const geminiState = {}; // { a: { lastInteractionId, deliveredIndex }, b: {...} }
 
   function getGeminiState(side) {
@@ -610,7 +613,12 @@
       }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data?.error?.message || `Gemini API error (${res.status})`);
+    if (!res.ok) {
+      // Error responses from this endpoint have been observed both as a plain
+      // object ({error:{...}}) and wrapped in an array ([{error:{...}}]).
+      const errObj = Array.isArray(data) ? data[0]?.error : data?.error;
+      throw new Error(errObj?.message || `Gemini API error (${res.status})`);
+    }
 
     const text = extractInteractionText(data);
     if (!text) throw new Error('Geminiから空の応答が返されました（安全フィルタでブロックされた可能性があります）');
