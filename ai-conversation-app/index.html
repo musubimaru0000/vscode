@@ -402,7 +402,7 @@
     </div>
     <label class="checkbox-label">
       <input type="checkbox" id="pause-each-turn" checked>
-      各ターンの後で一時停止し、あなたの発言を待つ（発言するか「スキップ」で次へ進めます）
+両方のエージェントが1回ずつ話したら一時停止し、あなたの発言を待つ（発言するか「スキップ」で次へ進めます）
     </label>
     <div class="buttons">
       <button class="primary" id="start-btn">会話を開始</button>
@@ -819,6 +819,7 @@
     const maxTokens = Math.max(50, parseInt(els.maxTokens.value, 10) || 400);
     const delayMs = Math.max(0, parseInt(els.delay.value, 10) || 0) * 1000;
     let currentSide = nextSpeakerSide();
+    const roundStartSide = currentSide; // pause only once both agents have spoken, not after each one
 
     try {
       for (let turn = 0; turn < maxTurns; turn++) {
@@ -851,7 +852,8 @@
         currentSide = otherSideOf(currentSide);
 
         if (turn < maxTurns - 1) {
-          if (els.pauseEachTurn.checked) {
+          const roundComplete = currentSide === roundStartSide;
+          if (els.pauseEachTurn.checked && roundComplete) {
             await waitForContinue(abortController.signal);
             if (!running) break;
             setStatus('会話を実行中…');
