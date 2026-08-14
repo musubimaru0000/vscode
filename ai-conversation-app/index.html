@@ -460,6 +460,7 @@
   };
 
   const STORAGE_KEY = 'ai-conversation-app:settings:v1';
+  const TRANSCRIPT_KEY = 'ai-conversation-app:transcript:v1';
 
   // --- persistence (non-sensitive fields always; API keys only if opted in) ---
   function loadSettings() {
@@ -505,6 +506,35 @@
       };
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
+
+  // --- transcript persistence, so a conversation survives closing the tab ---
+  function persistTranscript() {
+    try {
+      localStorage.setItem(TRANSCRIPT_KEY, JSON.stringify({ conversation, geminiState }));
+    } catch (e) {
+      // localStorage full/unavailable — the conversation still works, it just
+      // won't survive a reload.
+    }
+  }
+
+  function clearPersistedTranscript() {
+    localStorage.removeItem(TRANSCRIPT_KEY);
+  }
+
+  function loadTranscript() {
+    let saved;
+    try {
+      saved = JSON.parse(localStorage.getItem(TRANSCRIPT_KEY) || 'null');
+    } catch (e) {
+      return;
+    }
+    if (!saved || !Array.isArray(saved.conversation) || saved.conversation.length === 0) return;
+
+    conversation = saved.conversation;
+    Object.assign(geminiState, saved.geminiState || {});
+    for (const m of conversation) renderMessage(m.side, m.text);
+    setStatus('前回の続きの会話を復元しました。「会話を開始」を押すと続きから再開します。', 'ok');
   }
 
   loadSettings();
@@ -848,6 +878,7 @@
 
         conversation.push({ side: currentSide, text: reply });
         renderMessage(currentSide, reply);
+        persistTranscript();
 
         currentSide = otherSideOf(currentSide);
 
@@ -885,6 +916,7 @@
     if (text) {
       conversation.push({ side: 'user', text });
       renderMessage('user', text);
+      persistTranscript();
       els.userMessage.value = '';
       els.userMessage.focus();
     }
@@ -915,6 +947,7 @@
     if (abortController) abortController.abort();
     conversation = [];
     resetGeminiState();
+    clearPersistedTranscript();
     els.chat.innerHTML = '';
     els.chat.appendChild(els.emptyHint);
     els.emptyHint.style.display = 'block';
@@ -944,6 +977,8 @@
   [els.userName, els.topic, els.starter, els.maxTurns, els.delay, els.maxTokens, els.pauseEachTurn].forEach((el) => {
     el.addEventListener('change', saveSettings);
   });
+
+  loadTranscript();
 })();
 </script>
 
