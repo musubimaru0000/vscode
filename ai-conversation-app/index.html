@@ -376,7 +376,7 @@
       </div>
       <div>
         <label>最大トークン数（応答ごと）</label>
-        <input type="number" id="max-tokens" value="400" min="50" max="4096">
+        <input type="number" id="max-tokens" value="1200" min="50" max="8192">
       </div>
     </div>
     <div class="buttons">
@@ -511,8 +511,18 @@
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error?.message || `Anthropic API error (${res.status})`);
-    const text = (data.content || []).map(c => c.text || '').join('').trim();
-    if (!text) throw new Error('Anthropicから空の応答が返されました');
+    const blocks = data.content || [];
+    const text = blocks.map(c => c.text || '').join('').trim();
+    if (!text) {
+      // A model with extended thinking enabled can spend its whole token
+      // budget on "thinking"/"redacted_thinking" blocks and get cut off
+      // (stop_reason "max_tokens") before ever writing a text block.
+      const onlyNonText = blocks.length > 0 && blocks.every(c => c.type && c.type !== 'text');
+      if (data.stop_reason === 'max_tokens' || onlyNonText) {
+        throw new Error('Anthropicから空の応答が返されました（拡張思考にトークンを使い切り、回答本文が生成される前に打ち切られた可能性があります。「最大トークン数」を増やしてみてください）');
+      }
+      throw new Error('Anthropicから空の応答が返されました');
+    }
     return text;
   }
 
