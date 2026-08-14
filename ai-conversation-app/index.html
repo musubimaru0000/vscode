@@ -542,7 +542,9 @@
       role: m.role === 'me' ? 'model' : 'user',
       parts: [{ text: m.text }],
     }));
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    // Accept model names copied either as "gemini-2.5-flash" or "models/gemini-2.5-flash".
+    const modelId = model.replace(/^models\//, '');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
     const res = await fetch(url, {
       method: 'POST',
       signal,
@@ -601,9 +603,40 @@
     els.chat.scrollTop = els.chat.scrollHeight;
   }
 
+  const otherSideOf = (s) => (s === 'a' ? 'b' : 'a');
+
+  function nextSpeakerSide() {
+    // Whoever spoke last (ignoring the human) goes second-to-last; the other AI speaks next.
+    for (let i = conversation.length - 1; i >= 0; i--) {
+      const s = conversation[i].side;
+      if (s === 'a' || s === 'b') return otherSideOf(s);
+    }
+    return els.starter.value === 'b' ? 'b' : 'a';
+  }
+
   function buildHistoryFor(side) {
     // Convert the shared conversation log into this speaker's own-vs-other framing.
-    return conversation.map(m => ({ role: m.side === side ? 'me' : 'other', text: m.text }));
+    // 'other' entries (the opposing AI or the human) are name-prefixed so the
+    // distinction isn't lost when they get merged below.
+    const raw = conversation.map(m => {
+      const role = m.side === side ? 'me' : 'other';
+      const text = role === 'other' ? `${getDisplayName(m.side)}: ${m.text}` : m.text;
+      return { role, text };
+    });
+
+    // Providers like Anthropic/Gemini require strictly alternating roles, but a
+    // human aside can produce two consecutive 'other' turns (or two consecutive
+    // 'me' turns after a resumed run) — merge consecutive same-role entries.
+    const merged = [];
+    for (const item of raw) {
+      const last = merged[merged.length - 1];
+      if (last && last.role === item.role) {
+        last.text += '\n\n' + item.text;
+      } else {
+        merged.push({ ...item });
+      }
+    }
+    return merged;
   }
 
   function sleep(ms, signal) {
@@ -648,8 +681,7 @@
     const maxTurns = Math.max(1, parseInt(els.maxTurns.value, 10) || 10);
     const maxTokens = Math.max(50, parseInt(els.maxTokens.value, 10) || 400);
     const delayMs = Math.max(0, parseInt(els.delay.value, 10) || 0) * 1000;
-    let currentSide = els.starter.value === 'b' ? 'b' : 'a';
-    const otherSideOf = (s) => (s === 'a' ? 'b' : 'a');
+    let currentSide = nextSpeakerSide();
 
     try {
       for (let turn = 0; turn < maxTurns; turn++) {
