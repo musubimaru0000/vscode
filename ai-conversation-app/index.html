@@ -537,13 +537,29 @@
     return text;
   }
 
+  function normalizeGeminiModel(raw) {
+    let m = raw.trim();
+    // Full URL pasted (e.g. from a curl example) -> keep only the part after "/models/".
+    const marker = '/models/';
+    const idx = m.lastIndexOf(marker);
+    if (idx !== -1) m = m.slice(idx + marker.length);
+    m = m.replace(/^models\//, '');       // "models/gemini-2.5-flash" -> "gemini-2.5-flash"
+    m = m.replace(/:generateContent.*$/, ''); // trailing ":generateContent" from a copied endpoint
+    m = m.replace(/\?.*$/, '');           // trailing "?key=..." from a copied endpoint
+    m = m.replace(/[‐-―−]/g, '-'); // smart/en/em dashes -> plain hyphen
+    m = m.trim().toLowerCase();
+    // Google AI Studio's display name (e.g. "Gemini 2.5 Flash-Lite") rather than
+    // the API model ID ("gemini-2.5-flash-lite") -> turn spaces into hyphens too.
+    m = m.replace(/\s+/g, '-').replace(/-+/g, '-');
+    return m;
+  }
+
   async function callGemini({ apiKey, model, system, history, maxTokens, signal }) {
     const contents = history.map(m => ({
       role: m.role === 'me' ? 'model' : 'user',
       parts: [{ text: m.text }],
     }));
-    // Accept model names copied either as "gemini-2.5-flash" or "models/gemini-2.5-flash".
-    const modelId = model.replace(/^models\//, '');
+    const modelId = normalizeGeminiModel(model);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
     const res = await fetch(url, {
       method: 'POST',
