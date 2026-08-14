@@ -221,6 +221,13 @@
     border: 1px solid rgba(255, 140, 105, 0.35);
   }
   .msg.from-b .name { color: var(--accent-b); text-align: right; }
+  .msg.from-user {
+    align-self: center;
+    max-width: 88%;
+    background: rgba(74, 222, 128, 0.14);
+    border: 1px solid rgba(74, 222, 128, 0.4);
+  }
+  .msg.from-user .name { color: var(--ok); text-align: center; }
   .msg.system {
     align-self: center;
     background: transparent;
@@ -248,6 +255,25 @@
     border-radius: 6px;
     font-size: 12px;
     cursor: pointer;
+  }
+
+  .user-input-row {
+    display: flex;
+    gap: 10px;
+  }
+  .user-input-row input {
+    flex: 1;
+  }
+  .user-input-row button {
+    background: linear-gradient(135deg, var(--ok), #2fae63);
+    border: none;
+    color: #06210f;
+    padding: 0 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
   }
 </style>
 </head>
@@ -325,6 +351,10 @@
 
   <section class="controls">
     <div>
+      <label>あなたの表示名（会話に参加する際に使われます）</label>
+      <input type="text" id="user-name" value="あなた" style="max-width:240px;">
+    </div>
+    <div>
       <label>お題 / 最初の話しかけ内容</label>
       <textarea id="topic" style="min-height:48px;">リモートワークは今後も主流であり続けるべきか？</textarea>
     </div>
@@ -360,6 +390,12 @@
   <section class="chat" id="chat">
     <div class="empty-hint" id="empty-hint">まだ会話がありません。設定を入力して「会話を開始」を押してください。</div>
   </section>
+
+  <div class="user-input-row">
+    <input type="text" id="user-message" placeholder="会話に割り込んで発言する… (Enterで送信、実行中でも送れます)">
+    <button id="send-btn">送信</button>
+  </div>
+
   <div class="footer-actions">
     <button id="copy-btn">会話をテキストとしてコピー</button>
   </div>
@@ -378,6 +414,9 @@
       name: $('b-name'), provider: $('b-provider'), model: $('b-model'),
       key: $('b-key'), keySave: $('b-key-save'), system: $('b-system'),
     },
+    userName: $('user-name'),
+    userMessage: $('user-message'),
+    sendBtn: $('send-btn'),
     topic: $('topic'),
     starter: $('starter'),
     maxTurns: $('max-turns'),
@@ -413,6 +452,7 @@
         if (s.key) els[side].key.value = s.key;
       }
     }
+    if (saved.userName) els.userName.value = saved.userName;
     if (saved.topic) els.topic.value = saved.topic;
     if (saved.starter) els.starter.value = saved.starter;
     if (saved.maxTurns) els.maxTurns.value = saved.maxTurns;
@@ -421,7 +461,7 @@
   }
 
   function saveSettings() {
-    const data = { topic: els.topic.value, starter: els.starter.value,
+    const data = { userName: els.userName.value, topic: els.topic.value, starter: els.starter.value,
       maxTurns: els.maxTurns.value, delay: els.delay.value, maxTokens: els.maxTokens.value };
     for (const side of ['a', 'b']) {
       const keySave = els[side].keySave.checked;
@@ -532,13 +572,18 @@
     els.status.className = 'status' + (type ? ' ' + type : '');
   }
 
+  function getDisplayName(side) {
+    if (side === 'user') return els.userName.value.trim() || 'あなた';
+    return els[side].name.value || (side === 'a' ? 'エージェントA' : 'エージェントB');
+  }
+
   function renderMessage(side, text) {
     els.emptyHint.style.display = 'none';
     const div = document.createElement('div');
     div.className = 'msg from-' + side;
     const nameEl = document.createElement('div');
     nameEl.className = 'name';
-    nameEl.textContent = els[side].name.value || (side === 'a' ? 'エージェントA' : 'エージェントB');
+    nameEl.textContent = getDisplayName(side);
     const bodyEl = document.createElement('div');
     bodyEl.textContent = text;
     div.appendChild(nameEl);
@@ -655,6 +700,23 @@
     }
   }
 
+  function sendUserMessage() {
+    const text = els.userMessage.value.trim();
+    if (!text) return;
+    conversation.push({ side: 'user', text });
+    renderMessage('user', text);
+    els.userMessage.value = '';
+    els.userMessage.focus();
+  }
+
+  els.sendBtn.addEventListener('click', sendUserMessage);
+  els.userMessage.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) {
+      e.preventDefault();
+      sendUserMessage();
+    }
+  });
+
   els.startBtn.addEventListener('click', runConversation);
 
   els.stopBtn.addEventListener('click', () => {
@@ -672,6 +734,7 @@
     els.chat.innerHTML = '';
     els.chat.appendChild(els.emptyHint);
     els.emptyHint.style.display = 'block';
+    els.userMessage.value = '';
     setStatus('');
     els.startBtn.disabled = false;
     els.stopBtn.disabled = true;
@@ -679,7 +742,7 @@
 
   els.copyBtn.addEventListener('click', async () => {
     if (conversation.length === 0) { setStatus('コピーする会話がありません。'); return; }
-    const text = conversation.map(m => `${els[m.side].name.value}: ${m.text}`).join('\n\n');
+    const text = conversation.map(m => `${getDisplayName(m.side)}: ${m.text}`).join('\n\n');
     try {
       await navigator.clipboard.writeText(text);
       setStatus('会話をクリップボードにコピーしました。', 'ok');
@@ -694,7 +757,7 @@
       els[side][field].addEventListener('change', saveSettings);
     });
   });
-  [els.topic, els.starter, els.maxTurns, els.delay, els.maxTokens].forEach((el) => {
+  [els.userName, els.topic, els.starter, els.maxTurns, els.delay, els.maxTokens].forEach((el) => {
     el.addEventListener('change', saveSettings);
   });
 })();
