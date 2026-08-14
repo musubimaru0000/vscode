@@ -275,6 +275,27 @@
     cursor: pointer;
     white-space: nowrap;
   }
+  .user-input-row #skip-btn {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+  }
+  .user-input-row #skip-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .checkbox-label input {
+    width: auto;
+  }
 </style>
 </head>
 <body>
@@ -379,6 +400,10 @@
         <input type="number" id="max-tokens" value="1200" min="50" max="8192">
       </div>
     </div>
+    <label class="checkbox-label">
+      <input type="checkbox" id="pause-each-turn" checked>
+      各ターンの後で一時停止し、あなたの発言を待つ（発言するか「スキップ」で次へ進めます）
+    </label>
     <div class="buttons">
       <button class="primary" id="start-btn">会話を開始</button>
       <button class="secondary" id="stop-btn" disabled>停止</button>
@@ -394,6 +419,7 @@
   <div class="user-input-row">
     <input type="text" id="user-message" placeholder="会話に割り込んで発言する… (Enterで送信、実行中でも送れます)">
     <button id="send-btn">送信</button>
+    <button id="skip-btn" class="secondary" disabled>スキップ</button>
   </div>
 
   <div class="footer-actions">
@@ -417,11 +443,13 @@
     userName: $('user-name'),
     userMessage: $('user-message'),
     sendBtn: $('send-btn'),
+    skipBtn: $('skip-btn'),
     topic: $('topic'),
     starter: $('starter'),
     maxTurns: $('max-turns'),
     delay: $('delay'),
     maxTokens: $('max-tokens'),
+    pauseEachTurn: $('pause-each-turn'),
     startBtn: $('start-btn'),
     stopBtn: $('stop-btn'),
     resetBtn: $('reset-btn'),
@@ -458,11 +486,13 @@
     if (saved.maxTurns) els.maxTurns.value = saved.maxTurns;
     if (saved.delay !== undefined) els.delay.value = saved.delay;
     if (saved.maxTokens) els.maxTokens.value = saved.maxTokens;
+    if (saved.pauseEachTurn !== undefined) els.pauseEachTurn.checked = saved.pauseEachTurn;
   }
 
   function saveSettings() {
     const data = { userName: els.userName.value, topic: els.topic.value, starter: els.starter.value,
-      maxTurns: els.maxTurns.value, delay: els.delay.value, maxTokens: els.maxTokens.value };
+      maxTurns: els.maxTurns.value, delay: els.delay.value, maxTokens: els.maxTokens.value,
+      pauseEachTurn: els.pauseEachTurn.checked };
     for (const side of ['a', 'b']) {
       const keySave = els[side].keySave.checked;
       data[side] = {
@@ -644,15 +674,46 @@
   let running = false;
   let abortController = null;
   let conversation = []; // { side: 'a'|'b', text }
+  let continueResolver = null;
 
   function setStatus(text, type) {
     els.status.textContent = text || '';
     els.status.className = 'status' + (type ? ' ' + type : '');
   }
 
+  function waitForContinue(signal) {
+    return new Promise((resolve, reject) => {
+      continueResolver = resolve;
+      els.skipBtn.disabled = false;
+      setStatus('あなたの発言を待っています…（発言するか「スキップ」で次へ進めます）');
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          continueResolver = null;
+          els.skipBtn.disabled = true;
+          reject(new DOMException('Aborted', 'AbortError'));
+        }, { once: true });
+      }
+    });
+  }
+
+  function resumeFromWait() {
+    if (!continueResolver) return;
+    const resolve = continueResolver;
+    continueResolver = null;
+    els.skipBtn.disabled = true;
+    resolve();
+  }
+
   function getDisplayName(side) {
     if (side === 'user') return els.userName.value.trim() || 'あなた';
     return els[side].name.value || (side === 'a' ? 'エージェントA' : 'エージェントB');
+  }
+
+  function buildSystemPrompt(side) {
+    const name = getDisplayName(side);
+    const persona = els[side].system.value.trim();
+    const identity = `あなたの名前は「${name}」です。会話の中でそう呼ばれます。`;
+    return persona ? `${identity}\n\n${persona}` : identity;
   }
 
   function renderMessage(side, text) {
@@ -775,7 +836,7 @@
         const reply = await adapter({
           apiKey: cfg.key.value.trim(),
           model: cfg.model.value.trim(),
-          system: cfg.system.value.trim(),
+          system: buildSystemPrompt(currentSide),
           history,
           side: currentSide,
           maxTokens,
@@ -789,8 +850,14 @@
 
         currentSide = otherSideOf(currentSide);
 
-        if (turn < maxTurns - 1 && delayMs > 0) {
-          await sleep(delayMs, abortController.signal);
+        if (turn < maxTurns - 1) {
+          if (els.pauseEachTurn.checked) {
+            await waitForContinue(abortController.signal);
+            if (!running) break;
+            setStatus('会話を実行中…');
+          } else if (delayMs > 0) {
+            await sleep(delayMs, abortController.signal);
+          }
         }
       }
       if (running) setStatus('会話が終了しました（最大ターン数に到達）。', 'ok');
@@ -804,6 +871,8 @@
     } finally {
       running = false;
       abortController = null;
+      continueResolver = null;
+      els.skipBtn.disabled = true;
       els.startBtn.disabled = false;
       els.stopBtn.disabled = true;
     }
@@ -811,14 +880,17 @@
 
   function sendUserMessage() {
     const text = els.userMessage.value.trim();
-    if (!text) return;
-    conversation.push({ side: 'user', text });
-    renderMessage('user', text);
-    els.userMessage.value = '';
-    els.userMessage.focus();
+    if (text) {
+      conversation.push({ side: 'user', text });
+      renderMessage('user', text);
+      els.userMessage.value = '';
+      els.userMessage.focus();
+    }
+    resumeFromWait();
   }
 
   els.sendBtn.addEventListener('click', sendUserMessage);
+  els.skipBtn.addEventListener('click', resumeFromWait);
   els.userMessage.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.isComposing) {
       e.preventDefault();
@@ -867,7 +939,7 @@
       els[side][field].addEventListener('change', saveSettings);
     });
   });
-  [els.userName, els.topic, els.starter, els.maxTurns, els.delay, els.maxTokens].forEach((el) => {
+  [els.userName, els.topic, els.starter, els.maxTurns, els.delay, els.maxTokens, els.pauseEachTurn].forEach((el) => {
     el.addEventListener('change', saveSettings);
   });
 })();
