@@ -653,22 +653,12 @@
       .trim();
   }
 
-  async function callGemini({ apiKey, model, system, side, signal }) {
-    const modelId = normalizeGeminiModel(model);
-    const state = getGeminiState(side);
+  function isInteractionNotFoundError(res, data) {
+    const errObj = Array.isArray(data) ? data[0]?.error : data?.error;
+    return res.status === 404 || errObj?.status === 'NOT_FOUND' || /not found/i.test(errObj?.message || '');
+  }
 
-    // Snapshot now (not after the await) so a mid-flight human/AI message isn't
-    // silently skipped, and only commit past it once the call actually succeeds.
-    const deliveredUpTo = conversation.length;
-    const newEntries = conversation.slice(state.deliveredIndex, deliveredUpTo).filter(m => m.side !== side);
-    let inputItems = newEntries.map(m => ({ type: 'text', text: `${getDisplayName(m.side)}: ${m.text}` }));
-    if (inputItems.length === 0) {
-      inputItems = [{ type: 'text', text: els.topic.value.trim() }];
-    }
-    if (!state.lastInteractionId && system) {
-      inputItems = [{ type: 'text', text: `[System instructions for you]\n${system}` }, ...inputItems];
-    }
-
+  async function postInteraction({ apiKey, modelId, inputItems, previousInteractionId, signal }) {
     const res = await fetch(GEMINI_INTERACTIONS_URL, {
       method: 'POST',
       signal,
@@ -679,10 +669,50 @@
       body: JSON.stringify({
         model: modelId,
         input: inputItems,
-        previous_interaction_id: state.lastInteractionId,
+        previous_interaction_id: previousInteractionId,
       }),
     });
     const data = await res.json();
+    return { res, data };
+  }
+
+  function buildGeminiInput({ side, system, deliveredUpTo, fromIndex, previousInteractionId }) {
+    const entries = conversation.slice(fromIndex, deliveredUpTo).filter(m => m.side !== side);
+    let inputItems = entries.map(m => ({ type: 'text', text: `${getDisplayName(m.side)}: ${m.text}` }));
+    if (inputItems.length === 0) {
+      inputItems = [{ type: 'text', text: els.topic.value.trim() }];
+    }
+    if (!previousInteractionId && system) {
+      inputItems = [{ type: 'text', text: `[System instructions for you]\n${system}` }, ...inputItems];
+    }
+    return inputItems;
+  }
+
+  async function callGemini({ apiKey, model, system, side, signal }) {
+    const modelId = normalizeGeminiModel(model);
+    const state = getGeminiState(side);
+
+    // Snapshot now (not after the await) so a mid-flight human/AI message isn't
+    // silently skipped, and only commit past it once the call actually succeeds.
+    const deliveredUpTo = conversation.length;
+
+    let inputItems = buildGeminiInput({
+      side, system, deliveredUpTo, fromIndex: state.deliveredIndex, previousInteractionId: state.lastInteractionId,
+    });
+    let { res, data } = await postInteraction({
+      apiKey, modelId, inputItems, previousInteractionId: state.lastInteractionId, signal,
+    });
+
+    // If the saved thread ID is no longer known to Google (e.g. it expired
+    // after a long gap since the last message), start a fresh thread but
+    // replay the entire saved transcript so the model doesn't actually lose
+    // any context, instead of just failing.
+    if (!res.ok && state.lastInteractionId && isInteractionNotFoundError(res, data)) {
+      state.lastInteractionId = undefined;
+      inputItems = buildGeminiInput({ side, system, deliveredUpTo, fromIndex: 0, previousInteractionId: undefined });
+      ({ res, data } = await postInteraction({ apiKey, modelId, inputItems, previousInteractionId: undefined, signal }));
+    }
+
     if (!res.ok) {
       // Error responses from this endpoint have been observed both as a plain
       // object ({error:{...}}) and wrapped in an array ([{error:{...}}]).
