@@ -554,27 +554,69 @@
     return m;
   }
 
-  async function callGemini({ apiKey, model, system, history, maxTokens, signal }) {
-    const contents = history.map(m => ({
-      role: m.role === 'me' ? 'model' : 'user',
-      parts: [{ text: m.text }],
-    }));
+  // Gemini now uses the Interactions API (https://ai.google.dev/gemini-api/docs/interactions-overview),
+  // which Google recommends over generateContent for all new development. Unlike
+  // generateContent, it manages conversation history server-side: each agent's
+  // thread is continued via previous_interaction_id rather than by resending the
+  // full message list every turn, so per-side state is tracked in geminiState.
+  const GEMINI_INTERACTIONS_URL = 'https://generativelanguage.googleapis.com/v1beta2/interactions';
+  const geminiState = {}; // { a: { lastInteractionId, deliveredIndex }, b: {...} }
+
+  function getGeminiState(side) {
+    if (!geminiState[side]) geminiState[side] = { lastInteractionId: undefined, deliveredIndex: 0 };
+    return geminiState[side];
+  }
+
+  function resetGeminiState() {
+    delete geminiState.a;
+    delete geminiState.b;
+  }
+
+  function extractInteractionText(data) {
+    return (data.steps || [])
+      .filter(s => s.type === 'model_output')
+      .flatMap(s => (s.content || []).filter(c => c.type === 'text').map(c => c.text || ''))
+      .join('')
+      .trim();
+  }
+
+  async function callGemini({ apiKey, model, system, side, signal }) {
     const modelId = normalizeGeminiModel(model);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelId)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url, {
+    const state = getGeminiState(side);
+
+    // Snapshot now (not after the await) so a mid-flight human/AI message isn't
+    // silently skipped, and only commit past it once the call actually succeeds.
+    const deliveredUpTo = conversation.length;
+    const newEntries = conversation.slice(state.deliveredIndex, deliveredUpTo).filter(m => m.side !== side);
+    let inputItems = newEntries.map(m => ({ type: 'text', text: `${getDisplayName(m.side)}: ${m.text}` }));
+    if (inputItems.length === 0) {
+      inputItems = [{ type: 'text', text: els.topic.value.trim() }];
+    }
+    if (!state.lastInteractionId && system) {
+      inputItems = [{ type: 'text', text: `[System instructions for you]\n${system}` }, ...inputItems];
+    }
+
+    const res = await fetch(GEMINI_INTERACTIONS_URL, {
       method: 'POST',
       signal,
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
       body: JSON.stringify({
-        system_instruction: { parts: [{ text: system }] },
-        contents,
-        generationConfig: { maxOutputTokens: maxTokens },
+        model: modelId,
+        input: inputItems,
+        previous_interaction_id: state.lastInteractionId,
       }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.error?.message || `Gemini API error (${res.status})`);
-    const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
+
+    const text = extractInteractionText(data);
     if (!text) throw new Error('Geminiから空の応答が返されました（安全フィルタでブロックされた可能性があります）');
+
+    state.lastInteractionId = data.id;
+    state.deliveredIndex = deliveredUpTo;
     return text;
   }
 
@@ -717,6 +759,7 @@
           model: cfg.model.value.trim(),
           system: cfg.system.value.trim(),
           history,
+          side: currentSide,
           maxTokens,
           signal: abortController.signal,
         });
@@ -779,6 +822,7 @@
     running = false;
     if (abortController) abortController.abort();
     conversation = [];
+    resetGeminiState();
     els.chat.innerHTML = '';
     els.chat.appendChild(els.emptyHint);
     els.emptyHint.style.display = 'block';

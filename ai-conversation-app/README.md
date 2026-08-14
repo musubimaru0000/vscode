@@ -17,9 +17,14 @@ APIキーはブラウザ内のJavaScriptから各プロバイダのAPIへ直接�
 
 - Anthropic (Claude) — Messages API を `anthropic-dangerous-direct-browser-access` ヘッダー付きでブラウザから直接呼び出します
 - OpenAI — Chat Completions API
-- Google (Gemini) — generateContent API
+- Google (Gemini) — Interactions API（`generateContent`ではなく、Googleが新規開発に推奨している新しいAPI）。会話履歴はGoogle側がサーバーで管理し、`previous_interaction_id`でスレッドを継続します
 
-モデル名は自由入力です。各社の最新モデルIDをそのまま入力してください。
+モデル名は自由入力です。各社の最新モデルIDをそのまま入力してください。Geminiについては、Google AI Studioの画面に出てくる表示名（例:「Gemini 2.5 Flash-Lite」）をそのまま貼り付けても、アプリ側で自動的にAPI用のモデルID（`gemini-2.5-flash-lite`）に変換されます。
+
+### Geminiエージェントの注意点
+
+- Interactions APIは会話をサーバー側で保持するため、Geminiエージェントの最大トークン数設定は現状反映されません（Anthropic・OpenAIには反映されます）。
+- 「リセット」ボタンを押すと、Google側のスレッドも含めて会話が完全にリセットされます。
 
 ## 注意事項
 
