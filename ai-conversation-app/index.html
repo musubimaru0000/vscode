@@ -776,8 +776,13 @@
     return persona ? `${identity}\n\n${persona}` : identity;
   }
 
+  function isScrolledNearBottom(el, threshold = 80) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+  }
+
   function renderMessage(side, text) {
     els.emptyHint.style.display = 'none';
+    const shouldAutoScroll = isScrolledNearBottom(els.chat);
     const div = document.createElement('div');
     div.className = 'msg from-' + side;
     const nameEl = document.createElement('div');
@@ -788,16 +793,19 @@
     div.appendChild(nameEl);
     div.appendChild(bodyEl);
     els.chat.appendChild(div);
-    els.chat.scrollTop = els.chat.scrollHeight;
+    // Only follow along automatically if the reader was already near the
+    // bottom — don't yank them back down if they've scrolled up to reread.
+    if (shouldAutoScroll) els.chat.scrollTop = els.chat.scrollHeight;
   }
 
   function renderSystemNote(text) {
     els.emptyHint.style.display = 'none';
+    const shouldAutoScroll = isScrolledNearBottom(els.chat);
     const div = document.createElement('div');
     div.className = 'msg system';
     div.textContent = text;
     els.chat.appendChild(div);
-    els.chat.scrollTop = els.chat.scrollHeight;
+    if (shouldAutoScroll) els.chat.scrollTop = els.chat.scrollHeight;
   }
 
   const otherSideOf = (s) => (s === 'a' ? 'b' : 'a');
