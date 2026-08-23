@@ -636,7 +636,7 @@
   const geminiState = {}; // { a: { lastInteractionId, deliveredIndex }, b: {...} }
 
   function getGeminiState(side) {
-    if (!geminiState[side]) geminiState[side] = { lastInteractionId: undefined, deliveredIndex: 0 };
+    if (!geminiState[side]) geminiState[side] = { lastInteractionId: undefined, deliveredIndex: 0, lastSystemPrompt: undefined };
     return geminiState[side];
   }
 
@@ -676,7 +676,7 @@
     return { res, data };
   }
 
-  function buildGeminiInput({ side, system, deliveredUpTo, fromIndex, previousInteractionId }) {
+  function buildGeminiInput({ side, system, deliveredUpTo, fromIndex, previousInteractionId, systemChanged }) {
     const entries = conversation.slice(fromIndex, deliveredUpTo).filter(m => m.side !== side);
     let inputItems = entries.map(m => ({ type: 'text', text: `${getDisplayName(m.side)}: ${m.text}` }));
     if (inputItems.length === 0) {
@@ -684,6 +684,11 @@
     }
     if (!previousInteractionId && system) {
       inputItems = [{ type: 'text', text: `[System instructions for you]\n${system}` }, ...inputItems];
+    } else if (previousInteractionId && systemChanged && system) {
+      // The persona/system prompt was edited mid-conversation. There's no way
+      // to rewrite the thread's original instructions, so tell the model
+      // about the update as part of this turn's input instead.
+      inputItems = [{ type: 'text', text: `[Your instructions have been updated. Follow these from now on]\n${system}` }, ...inputItems];
     }
     return inputItems;
   }
@@ -695,9 +700,10 @@
     // Snapshot now (not after the await) so a mid-flight human/AI message isn't
     // silently skipped, and only commit past it once the call actually succeeds.
     const deliveredUpTo = conversation.length;
+    const systemChanged = !!system && system !== state.lastSystemPrompt;
 
     let inputItems = buildGeminiInput({
-      side, system, deliveredUpTo, fromIndex: state.deliveredIndex, previousInteractionId: state.lastInteractionId,
+      side, system, deliveredUpTo, fromIndex: state.deliveredIndex, previousInteractionId: state.lastInteractionId, systemChanged,
     });
     let { res, data } = await postInteraction({
       apiKey, modelId, inputItems, previousInteractionId: state.lastInteractionId, signal,
@@ -709,7 +715,7 @@
     // any context, instead of just failing.
     if (!res.ok && state.lastInteractionId && isInteractionNotFoundError(res, data)) {
       state.lastInteractionId = undefined;
-      inputItems = buildGeminiInput({ side, system, deliveredUpTo, fromIndex: 0, previousInteractionId: undefined });
+      inputItems = buildGeminiInput({ side, system, deliveredUpTo, fromIndex: 0, previousInteractionId: undefined, systemChanged });
       ({ res, data } = await postInteraction({ apiKey, modelId, inputItems, previousInteractionId: undefined, signal }));
     }
 
@@ -725,6 +731,7 @@
 
     state.lastInteractionId = data.id;
     state.deliveredIndex = deliveredUpTo;
+    state.lastSystemPrompt = system;
     return text;
   }
 
